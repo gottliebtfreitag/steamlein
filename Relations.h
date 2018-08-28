@@ -38,8 +38,6 @@ public:
 	T const* as() const {
 		if constexpr(std::is_class_v<T>) {
 			return dynamic_cast<T const*>(this);
-		} else if constexpr(std::is_void<T>::value) {
-			return this;
 		} else {
 			auto const* provide = dynamic_cast<Provide<T> const*>(this);
 			if (provide) {
@@ -49,7 +47,7 @@ public:
 		return nullptr;
 	}
 
-	virtual bool hasSameTypeAs(ProvideBase* other) const = 0;
+	virtual bool hasSameTypeAs(ProvideBase const* other) const = 0;
 };
 
 
@@ -57,8 +55,8 @@ template<>
 struct Provide<void> : ProvideBase {
 	using ProvideBase::ProvideBase;
 
-	virtual bool hasSameTypeAs(ProvideBase*) const {
-		return true;
+	virtual bool hasSameTypeAs(ProvideBase const* other) const {
+		return dynamic_cast<Provide<void> const*>(other);
 	};
 };
 
@@ -73,8 +71,8 @@ struct Provide<T, std::enable_if_t<not std::is_class_v<T>>> : ProvideBase {
 		return val;
 	}
 
-	virtual bool hasSameTypeAs(ProvideBase* other) const {
-		return dynamic_cast<Provide<T>*>(other);
+	virtual bool hasSameTypeAs(ProvideBase const* other) const {
+		return dynamic_cast<Provide<T> const*>(other);
 	};
 };
 
@@ -86,8 +84,8 @@ struct Provide<T, std::enable_if_t<std::is_class_v<T>>> : ProvideBase, T {
 	, T(std::forward<Args>(args)...) {}
 	using T::operator=;
 
-	virtual bool hasSameTypeAs(ProvideBase* other) const {
-		return dynamic_cast<Provide<T>*>(other);
+	virtual bool hasSameTypeAs(ProvideBase const* other) const {
+		return dynamic_cast<Provide<T> const*>(other);
 	};
 };
 
