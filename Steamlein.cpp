@@ -92,7 +92,9 @@ struct Dependency {
 						helper(next.first);
 					}
 				};
-				helper(this);
+				for (auto next : modulesAfter) {
+					helper(next.first);
+				}
 				try {
 					std::throw_with_nested( std::runtime_error("executing " + demangle(typeid(*module)) + " threw an exception:"));
 				} catch (...) {
@@ -100,8 +102,6 @@ struct Dependency {
 				}
 			}
 		}
-
-		skipFlag = false;
 
 		afterEdgesToGo = afterEdges;
 		for (auto const& next : modulesAfter) {
@@ -132,15 +132,12 @@ struct Dependency {
 };
 
 struct Steamlein::Pimpl {
-	simplyfile::Epoll epoll;
-
 	Pimpl() = default;
-	Pimpl(std::set<Module*> modules);
-
+	Pimpl(std::set<Module*> modules, Epoll& epoll);
 	std::vector<Dependency> dependencies;
 };
 
-Steamlein::Pimpl::Pimpl(std::set<Module*> modules)
+Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& epoll)
 {
 	// test for duplicate provides
 	std::string dup_provides_error{""};
@@ -218,7 +215,7 @@ Steamlein::Pimpl::Pimpl(std::set<Module*> modules)
 		auto executor = [=](int) {
 			d->execute();
 		};
-		auto trampoline = [=](int) {
+		auto trampoline = [=, &epoll](int) {
 			epoll.modFD(fd, EPOLLIN|EPOLLONESHOT);
 		};
 
@@ -235,33 +232,12 @@ Steamlein::Pimpl::Pimpl(std::set<Module*> modules)
 }
 
 Steamlein::Steamlein(std::set<Module*> modules)
-	: Module()
-	, pimpl(new Pimpl(modules))
+	: pimpl(new Pimpl(modules, *this))
 {}
 
 Steamlein::Steamlein()
-	: Module()
-	, pimpl(new Pimpl)
+	: pimpl(new Pimpl)
 {}
-
-Steamlein::Steamlein(Steamlein&& other)
-	: Module(std::move(other))
-{
-	std::swap(pimpl, other.pimpl);
-}
-Steamlein& Steamlein::operator=(Steamlein&& other) {
-	Module::operator=(std::move(other));
-	pimpl = std::move(other.pimpl);
-	return *this;
-}
-
-void Steamlein::runOneModule() {
-	pimpl->epoll.work(1);
-}
-
-int Steamlein::getFD() const {
-	return pimpl->epoll;
-}
 
 void Steamlein::deinit() {
 	for (auto& dep : pimpl->dependencies) {

@@ -3,31 +3,18 @@
 #include "Module.h"
 #include <memory>
 #include <set>
+#include <simplyfile/Epoll.h>
 
 namespace steamlein
 {
 
-struct Steamlein : private Module
+struct Steamlein : simplyfile::Epoll
 {
 	Steamlein();
 	Steamlein(std::set<Module*> modules);
-	Steamlein(Steamlein&&);
-	Steamlein& operator=(Steamlein&&);
 	virtual ~Steamlein();
 
-	void deinit() override;
-	void execute() override { return runOneModule(); }
-
-	/**
-	 * execute the next module
-	 * can be called from multiple threads for load balancing
-	 */
-	void runOneModule();
-
-	// get the internally used filedescriptor
-	// if this fd is readable a module can be executed
-	// use this to hook a Seamlein into an epoll and call runOneModule every time this fd becomes readable
-	int getFD() const override;
+	void deinit();
 private:
 	struct Pimpl;
 	std::unique_ptr<Pimpl> pimpl;
