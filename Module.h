@@ -15,21 +15,7 @@ private:
 public:
 	virtual ~Module() = default;
 
-	virtual void init() {};
-	virtual void deinit() {};
-	virtual void execute() {};
-
-	bool isInitialized() const {
-		return initialized;
-	}
-
-	virtual void execute_() {
-		if (not isInitialized()) {
-			init();
-			initialized = true;
-		}
-		execute();
-	}
+	virtual void executeModule() {};
 
 	void addRelation(Relation* rel) {
 		relations.emplace_back(rel);
