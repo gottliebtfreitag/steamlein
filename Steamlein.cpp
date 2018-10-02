@@ -4,7 +4,6 @@
 #include <simplyfile/Epoll.h>
 
 #include <map>
-#include <atomic>
 #include <mutex>
 #include <condition_variable>
 #include <cxxabi.h>
@@ -26,6 +25,21 @@ std::string demangle(std::type_info const& ti) {
 	return demangledName;
 }
 
+std::string removeAnonNamespace(std::string const& in_str) {
+	size_t index = 0;
+	std::string str = in_str;
+	std::string toReplace = "(anonymous namespace)::";
+	while (true) {
+	     index = str.find(toReplace, index);
+	     if (index == std::string::npos) {
+	    	 break;
+	     }
+	     str.replace(index, toReplace.size(), "");
+	     index += toReplace.size();
+	}
+	return str;
+}
+
 }
 
 struct Dependency {
@@ -37,12 +51,16 @@ struct Dependency {
 		modulesAfter = std::move(other.modulesAfter);
 		beforeEdges = other.beforeEdges;
 		beforeEdgesToGo = other.beforeEdgesToGo;
+		afterEdges = other.afterEdges;
+		afterEdgesToGo = other.afterEdgesToGo;
 	}
 	Dependency& operator=(Dependency&& other) noexcept {
 		module = other.module;
 		modulesAfter = std::move(other.modulesAfter);
 		beforeEdges = other.beforeEdges;
 		beforeEdgesToGo = other.beforeEdgesToGo;
+		afterEdges = other.afterEdges;
+		afterEdgesToGo = other.afterEdgesToGo;
 		event = std::move(other.event);
 		return *this;
 	}
@@ -82,26 +100,25 @@ struct Dependency {
 		afterEdgesToGo  = afterEdges;
 		if (not skipFlag) {
 			try {
-				module->execute_();
+				module->executeModule();
 			} catch (...) {
-				// mark all following modules as nonexecutable
-				std::function<void(Dependency*)> helper;
-				helper = [&](Dependency* dep) {
-					dep->skipFlag = true;
-					for (auto next : dep->modulesAfter) {
-						helper(next.first);
-					}
-				};
+				// to properly propagate an exception throught the steamlein any module that (require-)depends on this module must not be executed
+				// the non-executability must be propagated like the normal execution flow
 				for (auto next : modulesAfter) {
-					helper(next.first);
+					next.first->skipFlag = true;
 				}
 				try {
-					std::throw_with_nested( std::runtime_error("executing " + demangle(typeid(*module)) + " threw an exception:"));
+					std::throw_with_nested( std::runtime_error("executing " + removeAnonNamespace(demangle(typeid(*module))) + " threw an exception:"));
 				} catch (...) {
 					eptr = std::current_exception();
 				}
 			}
+		} else {
+			for (auto const& next : modulesAfter) {
+				next.first->skipFlag = true;
+			}
 		}
+		skipFlag = false;
 
 		afterEdgesToGo = afterEdges;
 		for (auto const& next : modulesAfter) {
@@ -134,10 +151,13 @@ struct Dependency {
 struct Steamlein::Pimpl {
 	Pimpl() = default;
 	Pimpl(std::set<Module*> modules, Epoll& epoll);
+	~Pimpl();
 	std::vector<Dependency> dependencies;
+	Epoll* epoll {nullptr};
 };
 
-Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& epoll)
+Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& _epoll)
+	: epoll{&_epoll}
 {
 	// test for duplicate provides
 	std::string dup_provides_error{""};
@@ -153,8 +173,8 @@ Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& epoll)
 								if (prov1->getName() == prov2->getName() and
 										prov1->hasSameTypeAs(prov2)) {
 									dup_provides_error += "there are multiple provides with the same type and name!\n" +
-											prov1->getName() + "@" + demangle(typeid(*mod)) + " and " +
-											prov2->getName() + "@" + demangle(typeid(*other_mod)) + "\n";
+											prov1->getName() + "@" + removeAnonNamespace(demangle(typeid(*mod))) + " and " +
+											prov2->getName() + "@" + removeAnonNamespace(demangle(typeid(*other_mod))) + "\n";
 								}
 							}
 						}
@@ -215,15 +235,15 @@ Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& epoll)
 		auto executor = [=](int) {
 			d->execute();
 		};
-		auto trampoline = [=, &epoll](int) {
-			epoll.modFD(fd, EPOLLIN|EPOLLONESHOT);
+		auto trampoline = [=](int) {
+			epoll->modFD(fd, EPOLLIN|EPOLLONESHOT);
 		};
-
+		std::string name = removeAnonNamespace(demangle(typeid(*d->module)));
 		if (fd == -1) {
-			epoll.addFD(dep.event, executor, EPOLLIN|EPOLLET);
+			epoll->addFD(dep.event, executor, EPOLLIN|EPOLLET, name);
 		} else {
-			epoll.addFD(fd, executor, 0);
-			epoll.addFD(dep.event, trampoline, EPOLLIN|EPOLLET);
+			epoll->addFD(fd, executor, 0, name);
+			epoll->addFD(dep.event, trampoline, EPOLLIN|EPOLLET, name + "_trampoline");
 		}
 		if (d->beforeEdges == 0) {
 			d->event.put(1); // that module can be executed immediately
@@ -231,19 +251,22 @@ Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& epoll)
 	}
 }
 
-Steamlein::Steamlein(std::set<Module*> modules)
-	: pimpl(new Pimpl(modules, *this))
-{}
+Steamlein::Pimpl::~Pimpl() {
+	if (epoll) {
+		for (auto& dep: dependencies) {
+			epoll->rmFD(dep.event, true);
+		}
+	}
+}
+
+void Steamlein::setModules(std::set<Module*> modules)
+{
+	pimpl = std::make_unique<Pimpl>(modules, *this);
+}
 
 Steamlein::Steamlein()
 	: pimpl(new Pimpl)
 {}
-
-void Steamlein::deinit() {
-	for (auto& dep : pimpl->dependencies) {
-		dep.module->deinit();
-	}
-}
 
 Steamlein::~Steamlein()
 {}

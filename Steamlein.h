@@ -11,10 +11,10 @@ namespace steamlein
 struct Steamlein : simplyfile::Epoll
 {
 	Steamlein();
-	Steamlein(std::set<Module*> modules);
+
 	virtual ~Steamlein();
 
-	void deinit();
+	void setModules(std::set<Module*> modules);
 private:
 	struct Pimpl;
 	std::unique_ptr<Pimpl> pimpl;
