@@ -174,7 +174,7 @@ Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& _epoll)
 							ProvideBase* prov2 = dynamic_cast<ProvideBase*>(other_rel);
 							if (prov2) {
 								if (prov1->getName() == prov2->getName() and
-										prov1->hasSameTypeAs(prov2)) {
+										prov1->getType() == prov2->getType()) {
 									dup_provides_error += "there are multiple provides with the same type and name!\n" +
 											prov1->getName() + "@" + removeAnonNamespace(demangle(typeid(*mod))) + " and " +
 											prov2->getName() + "@" + removeAnonNamespace(demangle(typeid(*other_mod))) + "\n";
