@@ -25,19 +25,13 @@ std::string demangle(std::type_info const& ti) {
 	return demangledName;
 }
 
-std::string removeAnonNamespace(std::string const& in_str) {
-	size_t index = 0;
-	std::string str = in_str;
-	std::string toReplace = "(anonymous namespace)::";
-	while (true) {
-	     index = str.find(toReplace, index);
-	     if (index == std::string::npos) {
-	    	 break;
-	     }
-	     str.replace(index, toReplace.size(), "");
-	     index += toReplace.size();
+std::string removeAnonNamespace(std::string s) {
+	std::string to_replace="(anonymous namespace)::";
+	std::size_t start = 0;
+	while((start = s.find(to_replace, start)) != std::string::npos) {
+	         s.replace(start, to_replace.length(), "");
 	}
-	return str;
+	return s;
 }
 
 }
@@ -148,11 +142,20 @@ struct Dependency {
 	}
 };
 
+struct Edge {
+	Dependency* from {nullptr};
+	Dependency* to   {nullptr};
+	Relation* fromRelation {nullptr};
+	Relation* toRelation {nullptr};
+	bool inverted {false}; // for recycles
+};
+
 struct Steamlein::Pimpl {
 	Pimpl() = default;
 	Pimpl(std::set<Module*> modules, Epoll& epoll);
 	~Pimpl();
 	std::vector<Dependency> dependencies;
+	std::vector<Edge> edges;
 	Epoll* epoll {nullptr};
 };
 
@@ -206,15 +209,17 @@ Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& _epoll)
 						if (provide) {
 							if (view->setProvide(provide)) {
 								// insert an a edge
-								Dependency* fromDep {&dep};
-								Dependency* toDep   {&other_dep};
+								Edge edge {&other_dep, &dep, provide, view, false};
 
-								if (dynamic_cast<AfterProvideBase*>(view)) {
-									std::swap(fromDep, toDep);
+								if (dynamic_cast<BeforeProvideBase*>(view)) {
+									std::swap(edge.from, edge.to);
+									std::swap(edge.fromRelation, edge.toRelation);
+									edge.inverted = true;
 								}
-								if (fromDep and toDep) {
-									fromDep->addDepAfterThis(toDep);
+								if (edge.from and edge.to) {
+									edge.from->addDepAfterThis(edge.to);
 								}
+								edges.emplace_back(edge);
 							}
 						}
 					}
@@ -270,5 +275,95 @@ Steamlein::Steamlein()
 
 Steamlein::~Steamlein()
 {}
+
+
+std::string Steamlein::toDotDescription() const {
+	std::stringstream description;
+	description << "digraph steamlein {\n";
+    description << "node [shape=record];\n";
+    description << "graph [pad=\"0.5\", nodesep=\"1\", ranksep=\"2\"];\n";
+    description << "rankdir=LR;\n";
+
+	for (auto const& dep : pimpl->dependencies) {
+		auto nodeName = removeAnonNamespace(demangle(typeid(*dep.module)));
+		description << "\"" << nodeName << "\" [label=\"" << nodeName << " | {";
+
+		std::vector<ProvideBase const*> provides;
+		std::vector<ProvideView const*> befores;
+		std::vector<ProvideView const*> afters;
+		for (auto const& relation : dep.module->getRelations()) {
+			if (auto provCast = dynamic_cast<ProvideBase const*>(relation)) {
+				provides.emplace_back(provCast);
+			} else {
+				auto viewCast = dynamic_cast<ProvideView const*>(relation);
+				if (dynamic_cast<BeforeProvideBase const*>(relation)) {
+					befores.emplace_back(viewCast);
+				} else if (dynamic_cast<AfterProvideBase const*>(relation)) {
+					afters.emplace_back(viewCast);
+				}
+			}
+		}
+		auto renderView = [&](ProvideView const* view) {
+			description << "<" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(view)) << "> " << view->getSelector();
+			description << "\\n[" << removeAnonNamespace(demangle(view->getType())) << "] ";
+		};
+		auto renderProvide = [&](ProvideBase const* prov) {
+			description << "<" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(prov)) << "> " << prov->getName() << " ";
+			description << "\\n[	" << removeAnonNamespace(demangle(prov->getType())) << "] ";
+		};
+		if (not afters.empty()) {
+			description << "{ ";
+			renderView(afters[0]);
+			for (std::size_t i{1}; i < afters.size(); ++i) {
+				description << "| ";
+				renderView(afters[i]);
+			}
+			description << "}";
+		}
+		if (not afters.empty() and (not provides.empty() or not befores.empty())) {
+			description << " |";
+		}
+		if (not provides.empty() or not befores.empty()) {
+			description << "{ ";
+			if (not provides.empty()) {
+				renderProvide(provides[0]);
+				for (std::size_t i{1}; i < provides.size(); ++i ) {
+					description << "| ";
+					renderProvide(provides[i]);
+				}
+				if (not befores.empty()) {
+					description << "| ";
+				}
+			}
+			if (not befores.empty()) {
+				renderView(befores[0]);
+				for (std::size_t i{1}; i < befores.size(); ++i ) {
+					description << "| ";
+					renderView(befores[i]);
+				}
+			}
+			description << "}";
+		}
+
+		description << "}\"];\n";
+	}
+
+	description << "\n";
+
+	for (auto const& edge : pimpl->edges) {
+		auto fromNodeName = removeAnonNamespace(demangle(typeid(*edge.from->module)));
+		auto toNodeName   = removeAnonNamespace(demangle(typeid(*edge.to->module)));
+
+		description << "\"" << fromNodeName << "\":" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(edge.fromRelation)) << " -> ";
+		description << "\"" << toNodeName << "\":" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(edge.toRelation));
+		if (edge.inverted) {
+			description << "[dir=back]";
+		}
+		description << ";\n";
+	}
+
+	description << "}\n";
+	return description.str();
+}
 
 } /* namespace pipeline */
