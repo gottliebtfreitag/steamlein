@@ -34,14 +34,7 @@ public:
 
 	template<typename T>
 	T const* as() const {
-		if constexpr (not std::is_class_v<T>) {
-			if (auto ptr = dynamic_cast<Provide<T> const*>(this)) {
-				return static_cast<T const*>(*ptr);
-			}
-			return nullptr;
-		} else {
-			return reinterpret_cast<T const*>(manualCast(typeid(T)));
-		}
+		return static_cast<T const*>(manualCast(typeid(T)));
 	}
 };
 
@@ -67,7 +60,7 @@ private:
 
 	void const* manualCast(std::type_info const& info) const {
 		if (detail::is_ancestor(getType(), info)) {
-			return detail::manual_up_cast(&val, getType(), info);
+			return  detail::manual_up_cast(&val, getType(), info);
 		}
 		return nullptr;
 	}
@@ -84,8 +77,8 @@ public:
 	T      & operator* ()       { return val; }
 	T const& operator* () const { return val; }
 
-	operator T      *()       { return &val; }
-	operator T const*() const { return &val; }
+	T      * get()       { return &val; }
+	T const* get() const { return &val; }
 
 	std::type_info const& getType() const override {
 		return typeid(T);
@@ -131,9 +124,9 @@ public:
 	}
 
 	bool valid() const { return val; }
-	T const* operator->() { return val;    }
-	T const& operator*()  { return *val;   }
-	operator T const* ()  { return val;    }
+	T const* operator->() const { return val;    }
+	T const& operator*()  const { return *val;   }
+	T const* get()  const { return val;    }
 	std::type_info const& getType() const override {
 		return typeid(T);
 	}

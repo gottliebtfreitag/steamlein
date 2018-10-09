@@ -41,6 +41,10 @@ bool is_ancestor(std::type_info const& deriv, std::type_info const& base) {
 }
 
 void const* manual_up_cast(void const* ptr, std::type_info const& deriv, std::type_info const& base) {
+	if (deriv == base) {
+		return ptr;
+	}
+
 	auto baseInfo =  dynamic_cast<__cxxabiv1::__class_type_info const*>(&base);
 
 	if (not baseInfo) {
