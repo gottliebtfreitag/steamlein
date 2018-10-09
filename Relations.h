@@ -18,8 +18,6 @@ struct Relation {
 	virtual ~Relation() = default;
 };
 
-template<typename T, typename other=void> struct Provide;
-
 struct ProvideBase : Relation {
 protected:
 	std::string name;
@@ -38,6 +36,7 @@ public:
 	}
 };
 
+template<typename ...Args> struct Provide;
 
 template<>
 struct Provide<void> final : ProvideBase {
@@ -54,7 +53,7 @@ private:
 };
 
 template<typename T>
-struct Provide<T> : ProvideBase {
+struct Provide<T> final : ProvideBase {
 private:
 	T val;
 
