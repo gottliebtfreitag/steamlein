@@ -37,7 +37,7 @@ std::string removeAnonNamespace(std::string s) {
 }
 
 struct Dependency {
-	Dependency(Module* mod) : module(mod) {}
+	Dependency(Module* mod, std::string const& name) : module(mod), moduleName{name} {}
 	Dependency(Dependency&& other) noexcept
 		: event{std::move(other.event)}
 	{
@@ -59,9 +59,10 @@ struct Dependency {
 		return *this;
 	}
 
-	// all modules running after this module
 	Module* module {};
+	std::string moduleName;
 
+	// all modules running after this module
 	std::map<Dependency*, int> modulesAfter;
 	std::map<Dependency*, int> modulesBefore;
 
@@ -152,32 +153,32 @@ struct Edge {
 
 struct Steamlein::Pimpl {
 	Pimpl() = default;
-	Pimpl(std::set<Module*> modules, Epoll& epoll);
+	Pimpl(std::map<Module*, std::string> modules, Epoll& epoll);
 	~Pimpl();
 	std::vector<Dependency> dependencies;
 	std::vector<Edge> edges;
 	Epoll* epoll {nullptr};
 };
 
-Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& _epoll)
+Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> modules, Epoll& _epoll)
 	: epoll{&_epoll}
 {
 	// test for duplicate provides
 	std::string dup_provides_error{""};
-	for (auto* mod : modules) {
-		for (auto* rel : mod->getRelations()) {
+	for (auto const& mod : modules) {
+		for (auto* rel : mod.first->getRelations()) {
 			ProvideBase* prov1 = dynamic_cast<ProvideBase*>(rel);
 			if (prov1) {
-				for (auto* other_mod : modules) {
-					if (other_mod != mod) {
-						for (auto* other_rel : other_mod->getRelations()) {
+				for (auto const& other_mod : modules) {
+					if (other_mod.first != mod.first) {
+						for (auto* other_rel : other_mod.first->getRelations()) {
 							ProvideBase* prov2 = dynamic_cast<ProvideBase*>(other_rel);
 							if (prov2) {
 								if (prov1->getName() == prov2->getName() and
 										prov1->getType() == prov2->getType()) {
 									dup_provides_error += "there are multiple provides with the same type and name!\n" +
-											prov1->getName() + "@" + removeAnonNamespace(demangle(typeid(*mod))) + " and " +
-											prov2->getName() + "@" + removeAnonNamespace(demangle(typeid(*other_mod))) + "\n";
+											prov1->getName() + "@" + removeAnonNamespace(mod.second) + " and " +
+											prov2->getName() + "@" + removeAnonNamespace(other_mod.second) + "\n";
 								}
 							}
 						}
@@ -190,8 +191,8 @@ Steamlein::Pimpl::Pimpl(std::set<Module*> modules, Epoll& _epoll)
 		throw std::runtime_error(dup_provides_error);
 	}
 
-	for (auto* mod : modules) {
-		dependencies.emplace_back(mod);
+	for (auto const& mod : modules) {
+		dependencies.emplace_back(mod.first, mod.second);
 	}
 
 	// hook the modules together
@@ -264,7 +265,7 @@ Steamlein::Pimpl::~Pimpl() {
 	}
 }
 
-void Steamlein::setModules(std::set<Module*> modules)
+void Steamlein::setModules(std::map<Module*, std::string> modules)
 {
 	pimpl = std::make_unique<Pimpl>(modules, *this);
 }
@@ -285,7 +286,7 @@ std::string Steamlein::toDotDescription() const {
     description << "rankdir=LR;\n";
 
 	for (auto const& dep : pimpl->dependencies) {
-		auto nodeName = removeAnonNamespace(demangle(typeid(*dep.module)));
+		auto nodeName = dep.moduleName + " \\n[" + removeAnonNamespace(demangle(typeid(*dep.module))) + "]";
 		description << "\"" << nodeName << "\" [label=\"" << nodeName << " | {";
 
 		std::vector<ProvideBase const*> provides;

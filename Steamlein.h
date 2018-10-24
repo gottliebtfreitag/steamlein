@@ -14,7 +14,7 @@ struct Steamlein : simplyfile::Epoll
 
 	virtual ~Steamlein();
 
-	void setModules(std::set<Module*> modules);
+	void setModules(std::map<Module*, std::string> modules);
 
 	std::string toDotDescription() const;
 private:
