@@ -39,7 +39,8 @@ std::string removeAnonNamespace(std::string s) {
 struct Dependency {
 	Dependency(Module* mod, std::string const& name) : module(mod), moduleName{name} {}
 	Dependency(Dependency&& other) noexcept
-		: event{std::move(other.event)}
+		: moduleName{std::move(other.moduleName)}
+		, event{std::move(other.event)}
 	{
 		module = other.module;
 		modulesAfter = std::move(other.modulesAfter);
@@ -50,6 +51,7 @@ struct Dependency {
 	}
 	Dependency& operator=(Dependency&& other) noexcept {
 		module = other.module;
+		moduleName = other.moduleName;
 		modulesAfter = std::move(other.modulesAfter);
 		beforeEdges = other.beforeEdges;
 		beforeEdgesToGo = other.beforeEdgesToGo;
@@ -144,23 +146,23 @@ struct Dependency {
 };
 
 struct Edge {
-	Dependency* from {nullptr};
-	Dependency* to   {nullptr};
-	Relation* fromRelation {nullptr};
-	Relation* toRelation {nullptr};
+	Dependency const* from {nullptr};
+	Dependency const* to   {nullptr};
+	Relation const* fromRelation {nullptr};
+	Relation const* toRelation {nullptr};
 	bool inverted {false}; // for recycles
 };
 
 struct Steamlein::Pimpl {
 	Pimpl() = default;
-	Pimpl(std::map<Module*, std::string> modules, Epoll& epoll);
+	Pimpl(std::map<Module*, std::string> const& modules, Epoll& epoll);
 	~Pimpl();
 	std::vector<Dependency> dependencies;
 	std::vector<Edge> edges;
 	Epoll* epoll {nullptr};
 };
 
-Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> modules, Epoll& _epoll)
+Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _epoll)
 	: epoll{&_epoll}
 {
 	// test for duplicate provides
@@ -177,8 +179,8 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> modules, Epoll& _epoll)
 								if (prov1->getName() == prov2->getName() and
 										prov1->getType() == prov2->getType()) {
 									dup_provides_error += "there are multiple provides with the same type and name!\n" +
-											prov1->getName() + "@" + removeAnonNamespace(mod.second) + " and " +
-											prov2->getName() + "@" + removeAnonNamespace(other_mod.second) + "\n";
+											prov1->getName() + "@" + mod.second + " and " +
+											prov2->getName() + "@" + other_mod.second + "\n";
 								}
 							}
 						}
@@ -201,24 +203,24 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> modules, Epoll& _epoll)
 			ProvideView* view = dynamic_cast<ProvideView*>(rel);
 			if (view) {
 				// look for any other module that provides what is needed
-				for (auto& other_dep : dependencies) {
-					if (&other_dep == &dep) {
+				for (auto& providing_dep : dependencies) {
+					if (&providing_dep == &dep) {
 						continue; // Don't self assign
 					}
-					for (auto* otherRel : other_dep.module->getRelations()) {
-						ProvideBase* provide = dynamic_cast<ProvideBase*>(otherRel);
+					for (auto const* providing_relation : providing_dep.module->getRelations()) {
+						ProvideBase const* provide = dynamic_cast<ProvideBase const*>(providing_relation);
 						if (provide) {
 							if (view->setProvide(provide)) {
 								// insert an a edge
-								Edge edge {&other_dep, &dep, provide, view, false};
+								Edge edge {&providing_dep, &dep, provide, view, false};
 
 								if (dynamic_cast<BeforeProvideBase*>(view)) {
 									std::swap(edge.from, edge.to);
 									std::swap(edge.fromRelation, edge.toRelation);
 									edge.inverted = true;
-								}
-								if (edge.from and edge.to) {
-									edge.from->addDepAfterThis(edge.to);
+									dep.addDepAfterThis(&providing_dep);
+								} else {
+									providing_dep.addDepAfterThis(&dep);
 								}
 								edges.emplace_back(edge);
 							}
@@ -265,7 +267,7 @@ Steamlein::Pimpl::~Pimpl() {
 	}
 }
 
-void Steamlein::setModules(std::map<Module*, std::string> modules)
+void Steamlein::setModules(std::map<Module*, std::string> const& modules)
 {
 	pimpl = std::make_unique<Pimpl>(modules, *this);
 }
@@ -285,9 +287,15 @@ std::string Steamlein::toDotDescription() const {
     description << "graph [pad=\"0.5\", nodesep=\"1\", ranksep=\"2\"];\n";
     description << "rankdir=LR;\n";
 
+    auto getNodeId = [](auto const& dep){
+    	return removeAnonNamespace(demangle(typeid(*dep.module)));
+    };
+    auto getNodeName = [=](auto const& dep){
+    	return dep.moduleName + "\\n[" + getNodeId(dep) + "]";
+    };
+
 	for (auto const& dep : pimpl->dependencies) {
-		auto nodeName = dep.moduleName + " \\n[" + removeAnonNamespace(demangle(typeid(*dep.module))) + "]";
-		description << "\"" << nodeName << "\" [label=\"" << nodeName << " | {";
+		description << "\"" << getNodeId(dep) << "\" [label=\"" << getNodeName(dep) << " | {";
 
 		std::vector<ProvideBase const*> provides;
 		std::vector<ProvideView const*> befores;
@@ -352,8 +360,8 @@ std::string Steamlein::toDotDescription() const {
 	description << "\n";
 
 	for (auto const& edge : pimpl->edges) {
-		auto fromNodeName = removeAnonNamespace(demangle(typeid(*edge.from->module)));
-		auto toNodeName   = removeAnonNamespace(demangle(typeid(*edge.to->module)));
+		auto fromNodeName = getNodeId(*edge.from); //removeAnonNamespace(demangle(typeid(*edge.from->module)));
+		auto toNodeName   = getNodeId(*edge.to); //removeAnonNamespace(demangle(typeid(*edge.to->module)));
 
 		description << "\"" << fromNodeName << "\":" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(edge.fromRelation)) << " -> ";
 		description << "\"" << toNodeName << "\":" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(edge.toRelation));
