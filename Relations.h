@@ -103,61 +103,59 @@ protected:
 template<typename T>
 struct TypedProvideView : ProvideView {
 private:
-	T const* val;
+	T const* val {nullptr};
+	ProvideBase const* provide {nullptr};
 public:
 	using ProvideView::ProvideView;
 
-	bool setProvide(ProvideBase const* provide) override {
+	bool setProvide(ProvideBase const* _provide) override {
 		if (val) {
 			// only take the first successful assignment
 			return false;
 		}
-		if (std::regex_match(provide->getName(), regex)) {
-			T const* castType = provide->as<T>();
+		if (std::regex_match(_provide->getName(), regex)) {
+			T const* castType = _provide->as<T>();
 			if (castType) {
 				val = castType;
+				provide = _provide;
 			}
 			return castType;
 		}
 		return false;
 	}
 
-	bool valid() const { return val; }
-	T const* operator->() const { return val;    }
-	T const& operator*()  const { return *val;   }
-	T const* get()  const { return val;    }
-	std::type_info const& getType() const override {
-		return typeid(T);
-	}
+	bool valid()          const { return val;  }
+	T const* operator->() const { return val;  }
+	T const& operator*()  const { return *val; }
+	T const* get()        const { return val;  }
+	ProvideBase const* getProvide() const { return provide; }
+	std::type_info const& getType() const override { return typeid(T); }
 };
 
 template<>
 struct TypedProvideView<void> : ProvideView {
-private:
-	ProvideBase const* val;
+	ProvideBase const* provide {nullptr};
 public:
 	using ProvideView::ProvideView;
 
-	bool setProvide(ProvideBase const* provide) override {
-		if (val) {
+	bool setProvide(ProvideBase const* _provide) override {
+		if (provide) {
 			// only take the first successful assignment
 			return false;
 		}
-		if (std::regex_match(provide->getName(), regex)) {
-			val = provide;
+		if (std::regex_match(_provide->getName(), regex)) {
+			provide = _provide;
 			return true;
 		}
 		return false;
 	}
-	bool valid() const { return val; }
-	std::type_info const& getType() const override {
-		return typeid(void);
-	}
+	bool valid() const { return provide; }
+	std::type_info const& getType() const override { return typeid(void); }
 };
 
 template<typename T>
 struct TypedMultiProvideView : ProvideView {
-	using ContainerType = std::vector<T const*>;
+	using ContainerType = std::map<ProvideBase const*, T const*>;
 private:
 	ContainerType vals;
 public:
@@ -166,7 +164,7 @@ public:
 		if (std::regex_match(provide->getName(), regex)) {
 			T const* castType = provide->as<T>();
 			if (castType) {
-				vals.emplace_back(castType);
+				vals.emplace(provide, castType);
 			}
 			return castType;
 		}
