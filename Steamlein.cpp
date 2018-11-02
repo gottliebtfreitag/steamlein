@@ -145,14 +145,6 @@ struct Dependency {
 	}
 };
 
-struct Edge {
-	Dependency const* from {nullptr};
-	Dependency const* to   {nullptr};
-	Relation const* fromRelation {nullptr};
-	Relation const* toRelation {nullptr};
-	bool inverted {false}; // for recycles
-};
-
 struct Steamlein::Pimpl {
 	Pimpl() = default;
 	Pimpl(std::map<Module*, std::string> const& modules, Epoll& epoll);
@@ -212,12 +204,9 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _e
 						if (provide) {
 							if (view->setProvide(provide)) {
 								// insert an a edge
-								Edge edge {&providing_dep, &dep, provide, view, false};
+								Edge edge {providing_dep.module, dep.module, provide, view};
 
 								if (dynamic_cast<BeforeProvideBase*>(view)) {
-									std::swap(edge.from, edge.to);
-									std::swap(edge.fromRelation, edge.toRelation);
-									edge.inverted = true;
 									dep.addDepAfterThis(&providing_dep);
 								} else {
 									providing_dep.addDepAfterThis(&dep);
@@ -279,100 +268,8 @@ Steamlein::Steamlein()
 Steamlein::~Steamlein()
 {}
 
-
-std::string Steamlein::toDotDescription() const {
-	std::stringstream description;
-	description << "digraph steamlein {\n";
-    description << "node [shape=record];\n";
-    description << "graph [pad=\"0.5\", nodesep=\"1\", ranksep=\"2\"];\n";
-    description << "rankdir=LR;\n";
-
-    auto getNodeId = [](auto const& dep){
-    	return removeAnonNamespace(demangle(typeid(*dep.module)));
-    };
-    auto getNodeName = [=](auto const& dep){
-    	return dep.moduleName + "\\n[" + getNodeId(dep) + "]";
-    };
-
-	for (auto const& dep : pimpl->dependencies) {
-		description << "\"" << getNodeId(dep) << "\" [label=\"" << getNodeName(dep) << " | {";
-
-		std::vector<ProvideBase const*> provides;
-		std::vector<ProvideView const*> befores;
-		std::vector<ProvideView const*> afters;
-		for (auto const& relation : dep.module->getRelations()) {
-			if (auto provCast = dynamic_cast<ProvideBase const*>(relation)) {
-				provides.emplace_back(provCast);
-			} else {
-				auto viewCast = dynamic_cast<ProvideView const*>(relation);
-				if (dynamic_cast<BeforeProvideBase const*>(relation)) {
-					befores.emplace_back(viewCast);
-				} else if (dynamic_cast<AfterProvideBase const*>(relation)) {
-					afters.emplace_back(viewCast);
-				}
-			}
-		}
-		auto renderView = [&](ProvideView const* view) {
-			description << "<" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(view)) << "> " << view->getSelector();
-			description << "\\n[" << removeAnonNamespace(demangle(view->getType())) << "] ";
-		};
-		auto renderProvide = [&](ProvideBase const* prov) {
-			description << "<" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(prov)) << "> " << prov->getName() << " ";
-			description << "\\n[	" << removeAnonNamespace(demangle(prov->getType())) << "] ";
-		};
-		if (not afters.empty()) {
-			description << "{ ";
-			renderView(afters[0]);
-			for (std::size_t i{1}; i < afters.size(); ++i) {
-				description << "| ";
-				renderView(afters[i]);
-			}
-			description << "}";
-		}
-		if (not afters.empty() and (not provides.empty() or not befores.empty())) {
-			description << " |";
-		}
-		if (not provides.empty() or not befores.empty()) {
-			description << "{ ";
-			if (not provides.empty()) {
-				renderProvide(provides[0]);
-				for (std::size_t i{1}; i < provides.size(); ++i ) {
-					description << "| ";
-					renderProvide(provides[i]);
-				}
-				if (not befores.empty()) {
-					description << "| ";
-				}
-			}
-			if (not befores.empty()) {
-				renderView(befores[0]);
-				for (std::size_t i{1}; i < befores.size(); ++i ) {
-					description << "| ";
-					renderView(befores[i]);
-				}
-			}
-			description << "}";
-		}
-
-		description << "}\"];\n";
-	}
-
-	description << "\n";
-
-	for (auto const& edge : pimpl->edges) {
-		auto fromNodeName = getNodeId(*edge.from); //removeAnonNamespace(demangle(typeid(*edge.from->module)));
-		auto toNodeName   = getNodeId(*edge.to); //removeAnonNamespace(demangle(typeid(*edge.to->module)));
-
-		description << "\"" << fromNodeName << "\":" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(edge.fromRelation)) << " -> ";
-		description << "\"" << toNodeName << "\":" << reinterpret_cast<uint64_t>(dynamic_cast<void const*>(edge.toRelation));
-		if (edge.inverted) {
-			description << "[dir=back]";
-		}
-		description << ";\n";
-	}
-
-	description << "}\n";
-	return description.str();
+std::vector<Edge> Steamlein::getEdges() const {
+	return pimpl->edges;
 }
 
 } /* namespace pipeline */
