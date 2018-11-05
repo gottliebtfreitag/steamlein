@@ -233,7 +233,15 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _e
 			d->execute();
 		};
 		auto trampoline = [=](int) {
-			epoll->modFD(fd, EPOLLIN|EPOLLONESHOT);
+			if (d->skipFlag) {
+				// in this case we cannot "properly" execute the module but
+				// have to propagate the error through the dependency graph
+				// executing the module this way will not perform any operation
+				// on the associated file descriptor thus re-enqueuing it later is safe
+				d->execute();
+			} else {
+				epoll->modFD(fd, EPOLLIN|EPOLLONESHOT);
+			}
 		};
 		std::string name = removeAnonNamespace(demangle(typeid(*d->module)));
 		if (fd == -1) {
