@@ -4,6 +4,7 @@
 #include <simplyfile/Epoll.h>
 
 #include <map>
+#include <unordered_map>
 #include <mutex>
 #include <condition_variable>
 #include <cxxabi.h>
@@ -65,10 +66,11 @@ struct Dependency {
 	std::string moduleName;
 
 	// all modules running after this module
-	std::map<Dependency*, int> modulesAfter;
-	std::map<Dependency*, int> modulesBefore;
+	std::unordered_map<Dependency*, int> modulesAfter;
+	std::unordered_map<Dependency*, int> modulesBefore;
 
 	std::mutex edgesMutex;
+	std::mutex fdMutex;
 	// how many edges are pointing to this module
 	int beforeEdges  {0};
 	// how many edges are comming from this module
@@ -119,14 +121,14 @@ struct Dependency {
 
 		afterEdgesToGo = afterEdges;
 		for (auto const& next : modulesAfter) {
-			std::unique_lock lock{next.first->edgesMutex};
+			std::lock_guard lock{next.first->edgesMutex};
 			next.first->beforeEdgesToGo -= next.second;
 			if (0 == next.first->beforeEdgesToGo and 0 == next.first->afterEdgesToGo) {
 				next.first->event.put(1);
 			}
 		}
 		for (auto const& before : modulesBefore) {
-			std::unique_lock lock{before.first->edgesMutex};
+			std::lock_guard lock{before.first->edgesMutex};
 			before.first->afterEdgesToGo -= before.second;
 			if (0 == before.first->afterEdgesToGo and 0 == before.first->beforeEdgesToGo) {
 				before.first->event.put(1);
@@ -233,15 +235,7 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _e
 			d->execute();
 		};
 		auto trampoline = [=](int) {
-			if (d->skipFlag) {
-				// in this case we cannot "properly" execute the module but
-				// have to propagate the error through the dependency graph
-				// executing the module this way will not perform any operation
-				// on the associated file descriptor thus re-enqueuing it later is safe
-				d->execute();
-			} else {
-				epoll->modFD(fd, EPOLLIN|EPOLLONESHOT);
-			}
+			epoll->modFD(fd, EPOLLIN|EPOLLONESHOT);
 		};
 		std::string name = removeAnonNamespace(demangle(typeid(*d->module)));
 		if (fd == -1) {
