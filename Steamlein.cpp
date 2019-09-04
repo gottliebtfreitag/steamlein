@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <cxxabi.h>
 #include <iostream>
+#include <atomic>
 
 namespace steamlein
 {
@@ -46,18 +47,16 @@ struct Dependency {
 		module = other.module;
 		modulesAfter = std::move(other.modulesAfter);
 		beforeEdges = other.beforeEdges;
-		beforeEdgesToGo = other.beforeEdgesToGo;
-		afterEdges = other.afterEdges;
-		afterEdgesToGo = other.afterEdgesToGo;
+		afterEdges  = other.afterEdges;
+		edgesToGo   = other.edgesToGo.load();
 	}
 	Dependency& operator=(Dependency&& other) noexcept {
 		module = other.module;
 		moduleName = other.moduleName;
 		modulesAfter = std::move(other.modulesAfter);
 		beforeEdges = other.beforeEdges;
-		beforeEdgesToGo = other.beforeEdgesToGo;
-		afterEdges = other.afterEdges;
-		afterEdgesToGo = other.afterEdgesToGo;
+		afterEdges  = other.afterEdges;
+		edgesToGo   = other.edgesToGo.load();
 		event = std::move(other.event);
 		return *this;
 	}
@@ -69,16 +68,13 @@ struct Dependency {
 	std::unordered_map<Dependency*, int> modulesAfter;
 	std::unordered_map<Dependency*, int> modulesBefore;
 
-	std::mutex edgesMutex;
-	std::mutex fdMutex;
 	// how many edges are pointing to this module
 	int beforeEdges  {0};
 	// how many edges are comming from this module
 	int afterEdges {0};
 
 	// for the current iteration how many edges need to be fulfilled till the module can be run
-	int beforeEdgesToGo {0};
-	int afterEdgesToGo {0};
+	std::atomic<int> edgesToGo {0};
 
 	bool skipFlag {false};
 
@@ -95,8 +91,7 @@ struct Dependency {
 	void execute() {
 		std::exception_ptr eptr;
 
-		beforeEdgesToGo = beforeEdges;
-		afterEdgesToGo  = afterEdges;
+		edgesToGo = beforeEdges + afterEdges;
 		if (not skipFlag) {
 			try {
 				module->executeModule();
@@ -119,21 +114,19 @@ struct Dependency {
 		}
 		skipFlag = false;
 
-		afterEdgesToGo = afterEdges;
-		for (auto const& next : modulesAfter) {
-			std::lock_guard lock{next.first->edgesMutex};
-			next.first->beforeEdgesToGo -= next.second;
-			if (0 == next.first->beforeEdgesToGo and 0 == next.first->afterEdgesToGo) {
-				next.first->event.put(1);
+        auto triggerFunc = [](auto& other) {
+            int expected = other.first->edgesToGo.load();
+            int desired = expected - other.second;
+            while (!other.first->edgesToGo.compare_exchange_weak(expected, desired)) {
+                desired = expected - other.second;
+            } 
+			if (0 == desired) {
+				other.first->event.put(1);
 			}
-		}
-		for (auto const& before : modulesBefore) {
-			std::lock_guard lock{before.first->edgesMutex};
-			before.first->afterEdgesToGo -= before.second;
-			if (0 == before.first->afterEdgesToGo and 0 == before.first->beforeEdgesToGo) {
-				before.first->event.put(1);
-			}
-		}
+        };
+        std::for_each(begin(modulesAfter), end(modulesAfter), triggerFunc);
+        std::for_each(begin(modulesBefore), end(modulesBefore), triggerFunc);
+
 		event.get();
 
 		// a module that runs on its own can set itself off immediately
@@ -224,7 +217,7 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _e
 
 	// setup
 	for (auto& dep: dependencies) {
-		dep.beforeEdgesToGo  = dep.beforeEdges;
+		dep.edgesToGo  = dep.beforeEdges;
 	}
 
 	for (auto& dep: dependencies) {
@@ -244,7 +237,7 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _e
 			epoll->addFD(fd, executor, 0, name);
 			epoll->addFD(dep.event, trampoline, EPOLLIN|EPOLLET, name + "_trampoline");
 		}
-		if (d->beforeEdges == 0) {
+		if (d->edgesToGo == 0) {
 			d->event.put(1); // that module can be executed immediately
 		}
 	}
