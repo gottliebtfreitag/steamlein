@@ -52,7 +52,7 @@ struct Dependency {
     }
     Dependency& operator=(Dependency&& other) noexcept {
         module = other.module;
-        moduleName = other.moduleName;
+        moduleName = std::move(other.moduleName);
         modulesAfter = std::move(other.modulesAfter);
         beforeEdges = other.beforeEdges;
         afterEdges  = other.afterEdges;
@@ -77,6 +77,7 @@ struct Dependency {
     std::atomic<int> edgesToGo {0};
 
     bool skipFlag {false};
+    bool deactivated {false};
 
     simplyfile::Event event{EFD_SEMAPHORE|EFD_NONBLOCK};
 
@@ -89,22 +90,51 @@ struct Dependency {
     }
 
     void execute() {
+        if (deactivated) {
+            return;
+        }
+
         std::exception_ptr eptr;
+        auto triggerFunc = [](auto const& other) {
+            int expected = other.first->edgesToGo.load();
+            int desired = expected - other.second;
+            while (!other.first->edgesToGo.compare_exchange_weak(expected, desired)) {
+                desired = expected - other.second;
+            } 
+            if (0 == desired and not other.first->deactivated) {
+                other.first->event.put(1);
+            }
+        };
 
         edgesToGo = beforeEdges + afterEdges;
         if (not skipFlag) {
             try {
                 module->executeModule();
+            } catch (StopModuleException const& exception) {
+                eptr = std::current_exception();
+                deactivated = true;
+                // unhook all left-dependencies as they can be unhooked without destroying the overall meaning of the DAG
+                for (auto& [module, count] : modulesBefore) {
+                    auto it = module->modulesAfter.find(this);
+                    if (it != module->modulesAfter.end()) {
+                        module->modulesAfter.erase(it);
+                        triggerFunc(std::make_pair(module, count));
+                        module->afterEdges -= count;
+                    }
+                }
+                modulesBefore.clear();
             } catch (...) {
+                try {
+                    std::throw_with_nested(std::runtime_error("executing " + removeAnonNamespace(demangle(typeid(*module))) + " threw an exception:"));
+                } catch (...) {
+                    eptr = std::current_exception();
+                }
+            }
+            if (eptr) {
                 // to properly propagate an exception throught the steamlein any module that (require-)depends on this module must not be executed
                 // the non-executability must be propagated like the normal execution flow
                 for (auto next : modulesAfter) {
                     next.first->skipFlag = true;
-                }
-                try {
-                    std::throw_with_nested( std::runtime_error("executing " + removeAnonNamespace(demangle(typeid(*module))) + " threw an exception:"));
-                } catch (...) {
-                    eptr = std::current_exception();
                 }
             }
         } else {
@@ -114,23 +144,13 @@ struct Dependency {
         }
         skipFlag = false;
 
-        auto triggerFunc = [](auto& other) {
-            int expected = other.first->edgesToGo.load();
-            int desired = expected - other.second;
-            while (!other.first->edgesToGo.compare_exchange_weak(expected, desired)) {
-                desired = expected - other.second;
-            } 
-            if (0 == desired) {
-                other.first->event.put(1);
-            }
-        };
         std::for_each(begin(modulesAfter), end(modulesAfter), triggerFunc);
         std::for_each(begin(modulesBefore), end(modulesBefore), triggerFunc);
 
         event.get();
 
         // a module that runs on its own can set itself off immediately
-        if (modulesAfter.empty() and modulesBefore.empty()) {
+        if (modulesAfter.empty() and modulesBefore.empty() and not deactivated) {
             event.put(1);
         }
 
