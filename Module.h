@@ -26,8 +26,6 @@ public:
 struct Module {
 private:
     std::vector<Relation*> relations;
-    bool initialized {false};
-    bool shutdownFlag{false};
 public:
     virtual ~Module() = default;
 
