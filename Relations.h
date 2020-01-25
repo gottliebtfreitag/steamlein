@@ -16,6 +16,11 @@ struct Module;
 struct Relation {
     Relation(Module* owner);
     virtual ~Relation() = default;
+
+    Relation(Relation const&) = delete;
+    Relation& operator=(Relation const&) = delete;
+    Relation(Relation&&) = delete;
+    Relation& operator=(Relation&&) = delete;
 };
 
 struct ProvideBase : Relation {
