@@ -79,7 +79,7 @@ struct Dependency {
     bool skipFlag {false};
     bool deactivated {false};
 
-    simplyfile::Event event{EFD_SEMAPHORE|EFD_NONBLOCK};
+    simplyfile::Event event{EFD_NONBLOCK};
 
     void addDepAfterThis(Dependency* dep) {
         modulesAfter[dep] += 1;
