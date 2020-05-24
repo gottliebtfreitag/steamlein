@@ -247,7 +247,7 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _e
         auto executor = [=](int) {
             d->execute();
         };
-        auto trampoline = [=](int) {
+        auto trampoline = [this, fd](int) {
             epoll->modFD(fd, EPOLLIN|EPOLLONESHOT);
         };
         std::string name = removeAnonNamespace(demangle(typeid(*d->module)));
