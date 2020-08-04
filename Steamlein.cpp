@@ -36,28 +36,33 @@ std::string removeAnonNamespace(std::string s) {
     return s;
 }
 
+template<typename Func>
+struct Finally final {
+	Finally(Func && f) : _f(f) {}
+	~Finally() {_f();}
+private:
+	Func _f;
+};
+
+template<typename Func>
+Finally(Func&&) -> Finally<Func>;
+
 }
 
 struct Dependency {
     Dependency(Module* mod, std::string const& name) : module(mod), moduleName{name} {}
     Dependency(Dependency&& other) noexcept
-        : moduleName{std::move(other.moduleName)}
-        , event{std::move(other.event)}
     {
-        module = other.module;
-        modulesAfter = std::move(other.modulesAfter);
-        beforeEdges = other.beforeEdges;
-        afterEdges  = other.afterEdges;
-        edgesToGo   = other.edgesToGo.load();
+        *this = std::move(other);
     }
     Dependency& operator=(Dependency&& other) noexcept {
-        module = other.module;
-        moduleName = std::move(other.moduleName);
+        module       = other.module;
+        moduleName   = std::move(other.moduleName);
         modulesAfter = std::move(other.modulesAfter);
-        beforeEdges = other.beforeEdges;
-        afterEdges  = other.afterEdges;
-        edgesToGo   = other.edgesToGo.load();
-        event = std::move(other.event);
+        beforeEdges  = other.beforeEdges;
+        afterEdges   = other.afterEdges;
+        edgesToGo    = other.edgesToGo.load();
+        event        = std::move(other.event);
         return *this;
     }
 
@@ -94,7 +99,6 @@ struct Dependency {
             return;
         }
 
-        std::exception_ptr eptr;
         auto triggerFunc = [](auto const& other) {
             int expected = other.first->edgesToGo.load();
             int desired = expected - other.second;
@@ -106,12 +110,32 @@ struct Dependency {
             }
         };
 
+        auto finally = Finally{[this, triggerFunc] {
+            if (std::uncaught_exceptions()) {
+                // to properly propagate an exception through the steamlein any module that (require-)depends on this module must not be executed
+                // the non-executability must be propagated like the normal execution flow
+                for (auto next : modulesAfter) {
+                    next.first->skipFlag = true;
+                }
+            }
+
+            skipFlag = false;
+            event.get();
+            
+            std::for_each(begin(modulesAfter), end(modulesAfter), triggerFunc);
+            std::for_each(begin(modulesBefore), end(modulesBefore), triggerFunc);
+
+            // a module that runs on its own can set itself off immediately
+            if (modulesAfter.empty() and modulesBefore.empty() and not deactivated) {
+                event.put(1);
+            }
+        }};
+
         edgesToGo = beforeEdges + afterEdges;
         if (not skipFlag) {
             try {
                 module->executeModule();
             } catch (StopModuleException const& exception) {
-                eptr = std::current_exception();
                 deactivated = true;
                 // unhook all left-dependencies as they can be unhooked without destroying the overall meaning of the DAG
                 for (auto& [module, count] : modulesBefore) {
@@ -123,54 +147,27 @@ struct Dependency {
                     }
                 }
                 modulesBefore.clear();
-            } catch (...) {
-                try {
-                    std::throw_with_nested(std::runtime_error("executing " + removeAnonNamespace(demangle(typeid(*module))) + " threw an exception:"));
-                } catch (...) {
-                    eptr = std::current_exception();
-                }
-            }
-            if (eptr) {
-                // to properly propagate an exception throught the steamlein any module that (require-)depends on this module must not be executed
-                // the non-executability must be propagated like the normal execution flow
-                for (auto next : modulesAfter) {
-                    next.first->skipFlag = true;
-                }
+                throw;
             }
         } else {
             for (auto const& next : modulesAfter) {
                 next.first->skipFlag = true;
             }
         }
-        skipFlag = false;
-
-        std::for_each(begin(modulesAfter), end(modulesAfter), triggerFunc);
-        std::for_each(begin(modulesBefore), end(modulesBefore), triggerFunc);
-
-        event.get();
-
-        // a module that runs on its own can set itself off immediately
-        if (modulesAfter.empty() and modulesBefore.empty() and not deactivated) {
-            event.put(1);
-        }
-
-        if (eptr) {
-            std::rethrow_exception(eptr);
-        }
     }
 };
 
 struct Steamlein::Pimpl {
     Pimpl() = default;
-    Pimpl(std::map<Module*, std::string> const& modules, Epoll& epoll);
+    Pimpl(std::map<Module*, std::string> const& modules, simplyfile::Epoll& epoll);
     ~Pimpl();
     std::vector<Dependency> dependencies;
     std::vector<Edge> edges;
-    Epoll* epoll {nullptr};
+    simplyfile::Epoll& epoll;
 };
 
-Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _epoll)
-    : epoll{&_epoll}
+Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, simplyfile::Epoll& i_epoll)
+    : epoll{i_epoll}
 {
     // test for duplicate provides
     std::string dup_provides_error{""};
@@ -248,14 +245,14 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _e
             d->execute();
         };
         auto trampoline = [this, fd](int) {
-            epoll->modFD(fd, EPOLLIN|EPOLLONESHOT);
+            epoll.modFD(fd, EPOLLIN|EPOLLONESHOT);
         };
         std::string name = removeAnonNamespace(demangle(typeid(*d->module)));
         if (fd == -1) {
-            epoll->addFD(dep.event, executor, EPOLLIN|EPOLLET, name);
+            epoll.addFD(dep.event, executor, EPOLLIN|EPOLLET, name);
         } else {
-            epoll->addFD(fd, executor, 0, name);
-            epoll->addFD(dep.event, trampoline, EPOLLIN|EPOLLET, name + "_trampoline");
+            epoll.addFD(fd, executor, 0, name);
+            epoll.addFD(dep.event, trampoline, EPOLLIN|EPOLLET, name + "_trampoline");
         }
         if (d->edgesToGo == 0) {
             d->event.put(1); // that module can be executed immediately
@@ -264,20 +261,13 @@ Steamlein::Pimpl::Pimpl(std::map<Module*, std::string> const& modules, Epoll& _e
 }
 
 Steamlein::Pimpl::~Pimpl() {
-    if (epoll) {
-        for (auto& dep: dependencies) {
-            epoll->rmFD(dep.event, true);
-        }
+    for (auto& dep: dependencies) {
+        epoll.rmFD(dep.event, true);
     }
 }
 
-void Steamlein::setModules(std::map<Module*, std::string> const& modules)
-{
-    pimpl = std::make_unique<Pimpl>(modules, *this);
-}
-
-Steamlein::Steamlein()
-    : pimpl(new Pimpl)
+Steamlein::Steamlein(std::map<Module*, std::string> const& modules, simplyfile::Epoll& epoll)
+    : pimpl{std::make_unique<Pimpl>(modules, epoll)}
 {}
 
 Steamlein::~Steamlein()

@@ -15,13 +15,11 @@ struct Edge {
     Relation const* toRelation {nullptr};
 };
 
-struct Steamlein : simplyfile::Epoll
+struct Steamlein 
 {
-    Steamlein();
+    Steamlein(std::map<Module*, std::string> const& modules, simplyfile::Epoll& epoll);
+    ~Steamlein();
 
-    virtual ~Steamlein();
-
-    void setModules(std::map<Module*, std::string> const& modules);
     std::vector<Edge> getEdges() const;
 private:
     struct Pimpl;
