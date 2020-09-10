@@ -9,20 +9,6 @@ namespace steamlein
 {
 struct Relation;
 
-// throw this exception from your execute method to indicate that the current module shall be marked as non-executable
-struct StopModuleException : std::exception {
-private:
-    std::string message;
-
-public:
-    StopModuleException(std::string what) : message{std::move(what)} {}
-    virtual ~StopModuleException() = default;
-
-    const char* what() const noexcept override {
-        return message.c_str();
-    }
-};
-
 struct Module {
 private:
     std::vector<Relation*> relations;

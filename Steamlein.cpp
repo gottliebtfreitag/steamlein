@@ -133,22 +133,7 @@ struct Dependency {
 
         edgesToGo = beforeEdges + afterEdges;
         if (not skipFlag) {
-            try {
-                module->executeModule();
-            } catch (StopModuleException const& exception) {
-                deactivated = true;
-                // unhook all left-dependencies as they can be unhooked without destroying the overall meaning of the DAG
-                for (auto& [module, count] : modulesBefore) {
-                    auto it = module->modulesAfter.find(this);
-                    if (it != module->modulesAfter.end()) {
-                        module->modulesAfter.erase(it);
-                        triggerFunc(std::make_pair(module, count));
-                        module->afterEdges -= count;
-                    }
-                }
-                modulesBefore.clear();
-                throw;
-            }
+            module->executeModule();
         } else {
             for (auto const& next : modulesAfter) {
                 next.first->skipFlag = true;
